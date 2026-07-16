@@ -21,3 +21,10 @@ class LineVerdict(BaseModel):
 class CheckResponse(BaseModel):
     verdicts: list[LineVerdict]
     first_wrong_line: int | None = None
+
+class TranscribeRequest(BaseModel):
+    image_base64: str  # PNG, base64-encoded, no data-URL prefix
+
+
+class TranscribeResponse(BaseModel):
+    text: str

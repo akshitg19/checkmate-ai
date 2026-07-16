@@ -1,5 +1,6 @@
 from fastapi import FastAPI
-
+from schemas import CheckRequest, CheckResponse, TranscribeRequest, TranscribeResponse
+from transcription import transcribe_line
 from judge import AlgebraJudge
 from schemas import CheckRequest, CheckResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,3 +27,8 @@ def check_steps(req: CheckRequest):
     verdicts = judge.check(req.problem, req.steps)
     first_wrong = next((v.line_number for v in verdicts if not v.valid), None)
     return CheckResponse(verdicts=verdicts, first_wrong_line=first_wrong)
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+def transcribe(req: TranscribeRequest):
+    text = transcribe_line(req.image_base64)
+    return TranscribeResponse(text=text)
