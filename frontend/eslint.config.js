@@ -17,5 +17,10 @@ export default defineConfig([
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
+    // The React Compiler is not enabled in this Vite prototype. Keep the
+    // ordinary Hooks correctness rules without enforcing compiler transforms.
+    rules: {
+      'react-hooks/preserve-manual-memoization': 'off',
+    },
   },
 ])

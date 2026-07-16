@@ -1,8 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from schemas import CheckRequest, CheckResponse, TranscribeRequest, TranscribeResponse
-from transcription import transcribe_line
+from transcription import (
+    TranscriptionInputError,
+    TranscriptionServiceError,
+    transcribe_line,
+)
 from judge import AlgebraJudge
-from schemas import CheckRequest, CheckResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CheckMate API")
@@ -30,5 +33,13 @@ def check_steps(req: CheckRequest):
 
 @app.post("/transcribe", response_model=TranscribeResponse)
 def transcribe(req: TranscribeRequest):
-    text = transcribe_line(req.image_base64)
+    try:
+        text = transcribe_line(req.image_base64)
+    except TranscriptionInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TranscriptionServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Transcription is temporarily unavailable",
+        ) from exc
     return TranscribeResponse(text=text)
