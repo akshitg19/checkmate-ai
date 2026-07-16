@@ -113,33 +113,569 @@ The verdict stage was built first, out of order, because it was the only stage w
 - **Hint ladder:** the three escalating hint levels a student can request for a flagged line.
 - **The spine:** shorthand for the minimal end-to-end path: stroke in, verdict out.
 
-## 12. Tasks
+# 12. CheckMate Team Workflow and Task Split
 
-Before splitting tasks, one structural thing needs to change: up to now you've been committing straight to main. That's fine solo, it breaks immediately with three people, someone's git push will get rejected the moment two of you edit the same file in the same week. Fix that first, then the plan.
-Git workflow for 3 people
+## 1. Git Workflow for a Three-Person Team
 
-Nobody commits directly to main from now on. main only receives finished, working code via pull request.
-Each person works on a branch named after their piece: git checkout -b frontend-canvas, git checkout -b backend-judge, git checkout -b ai-transcription.
-Push the branch, open a PR on GitHub, at least one teammate looks at it before merging. Doesn't need to be a big review, just a second pair of eyes, "does this run" is enough at this stage.
-Pull main into your branch (git pull origin main) before starting each new work session, so you're not diverging for days.
+Now that three people will be working on the project, nobody should commit directly to `main`.
 
-This costs a little overhead now and saves you from a merge disaster the week before your demo.
-Splitting the work: by architecture layer, not by "half the file each"
-Your five-stage pipeline (ink → segmentation → transcription → verdict → hint) already has natural seams. Assign by seam, so two people are rarely editing the same file:
-Person 1 — Frontend / Ink (you, since you're already deep in this)
-Canvas, stroke capture, segmentation, the pen-lift-finished trigger, rendering a line to PNG, all UI. Owns frontend/ entirely.
-Person 2 — Backend / Judges (David)
-The FastAPI app, the judge interface, extending algebra coverage toward precalc, and — this is the meaty one starting week 3 — the RDKit chemistry judge. Owns backend/judge/ and backend/main.py's routing.
-Person 3 — AI layer / Transcription / Testing (your third teammate)
-The /transcribe endpoint, prompt tuning against messy real handwriting, the hint-generation calls once we get there, and running the week 3 real-student test since this person will know the transcription failure modes best. Owns backend/transcription.py and, later, backend/hints.py.
-Why this split and not "frontend person vs backend person" 50/50: with two people on backend it'd collide constantly on main.py. This way each person owns files the others rarely touch, and the seams between you are the request/response contracts already written in schemas.py, which is the one shared file everyone reads but nobody should casually change without telling the others.
-Week-by-week, who's blocked on whom
+The `main` branch should only contain finished, working code that has been reviewed through a pull request.
 
-Week 1 (now): you finish the spine wiring (canvas → transcribe → check). David starts extending the algebra judge to handle more equation types in parallel, since it doesn't depend on your wiring. Person 3 stress-tests /transcribe with deliberately bad handwriting once your PNG export exists, tunes the prompt.
-Week 2: hint ladder. This is naturally Person 3 (writes the hint prompt/endpoint) + you (renders it in the UI). David keeps hardening the algebra judge, unaffected.
-Week 3: David builds the chemistry judge, this is his biggest chunk. You build the drawing/UI affordances chemistry needs if any differ from algebra. Person 3 runs the 5-student test session and logs where transcription breaks on real kids' handwriting.
-Week 4: everyone stops building new things, this week is bug-fixing, latency, and demo rehearsal only. No new branches after roughly the midpoint of week 4, that's the freeze.
+### Branches
 
-One habit worth starting this week
-Add a short section to PROJECT_NOTES.md called "Ownership" listing who owns which files, so when something breaks nobody has to ask "whose is this." I can add that now if you want, or you can jot it in as the assignments settle.
-Confirm the split makes sense for your actual team (I'm guessing roles, correct me if David or your third person wants a different piece), and then let's get back to closing the spine, the /transcribe endpoint just needs the restart-and-check-/docs step to confirm it's wired before we touch the frontend.
+Each person should create a branch for the part of the project they are working on.
+
+Example branch names:
+
+```bash
+git checkout -b frontend-canvas
+git checkout -b backend-judge
+git checkout -b ai-transcription
+```
+
+When the work is ready:
+
+1. Push the branch to GitHub.
+2. Open a pull request into `main`.
+3. Have at least one teammate review it.
+4. Confirm that the code runs before merging.
+
+The review does not need to be extremely detailed at this stage. The main goal is to have a second person check that the changes make sense and do not break the project.
+
+### Starting Each Work Session
+
+Before beginning new work, update your branch with the latest version of `main`:
+
+```bash
+git checkout main
+git pull origin main
+git checkout your-branch-name
+git merge main
+```
+
+This reduces the chance of people working on outdated versions of the project for several days.
+
+Do not use only:
+
+```bash
+git pull origin main
+```
+
+while on a feature branch unless you understand how Git will merge the remote branch into your current branch. Switching to `main`, updating it, and then merging it into your feature branch is easier to understand and keeps the process consistent.
+
+This workflow adds a small amount of overhead now but helps prevent a major merge problem before the demo.
+
+---
+
+# 2. Task Split
+
+The work should be divided by parts of the system rather than having multiple people edit the same files.
+
+The CheckMate pipeline is:
+
+```text
+Ink Capture
+    ↓
+Line Segmentation
+    ↓
+Transcription
+    ↓
+Verdict
+    ↓
+Hint
+```
+
+Each person should own a different section of this pipeline.
+
+---
+
+## Person 1 — Frontend and Ink Capture
+
+### Main Responsibilities
+
+Person 1 owns the tablet interface and everything involving stylus input.
+
+Tasks include:
+
+* Building the drawing canvas
+* Capturing stylus strokes
+* Recording pen position, timing, and pressure
+* Displaying the handwriting on the screen
+* Grouping strokes into written lines
+* Detecting when a line is finished
+* Rendering each completed line as a PNG image
+* Sending completed lines to the backend
+* Underlining incorrect lines
+* Displaying transcription results and hints
+* Building the overall user interface
+
+### Main Files
+
+Person 1 primarily owns:
+
+```text
+frontend/
+```
+
+This person should avoid editing backend logic unless a frontend-backend contract needs to change.
+
+### Primary Goal
+
+Make it possible for a student to write on a tablet and send a completed handwritten line through the rest of the system.
+
+---
+
+## Person 2 — Backend and Deterministic Judges
+
+### Main Responsibilities
+
+Person 2 owns the FastAPI backend and the software that determines whether a step is correct.
+
+Tasks include:
+
+* Maintaining the FastAPI application
+* Maintaining the `/check` endpoint
+* Improving the common judge interface
+* Extending algebra support
+* Supporting additional equation types
+* Testing valid and invalid algebra transformations
+* Handling unsupported mathematical steps clearly
+* Building the chemistry judge
+* Integrating RDKit
+* Defining how molecular structures are compared
+* Maintaining backend routing
+
+### Main Files
+
+Person 2 primarily owns:
+
+```text
+backend/judge/
+backend/main.py
+```
+
+Changes to `backend/main.py` should be kept small because it connects several parts of the system.
+
+### Primary Goal
+
+Make the verdict system accurate, predictable, and easy to expand from algebra into chemistry.
+
+---
+
+## Person 3 — AI Transcription, Hints, and Testing
+
+### Main Responsibilities
+
+Person 3 owns the parts of the system that use Gemini or another vision model.
+
+Tasks include:
+
+* Building and maintaining the `/transcribe` endpoint
+* Sending handwritten line images to Gemini
+* Returning structured typed math
+* Testing transcription with messy handwriting
+* Improving the transcription prompt
+* Recording common transcription failures
+* Adding confidence or error handling when handwriting cannot be read
+* Building the hint-generation endpoint
+* Designing the three-level hint ladder
+* Ensuring hints do not reveal the answer
+* Organizing real-student testing
+* Logging problems found during testing
+
+### Main Files
+
+Person 3 primarily owns:
+
+```text
+backend/transcription.py
+backend/hints.py
+```
+
+This person may also own a testing folder such as:
+
+```text
+tests/transcription/
+```
+
+### Primary Goal
+
+Make handwriting transcription reliable enough for the demo and make hints useful without solving the problem for the student.
+
+---
+
+# 3. Shared Files and Communication
+
+Some files define how the frontend and backend communicate.
+
+For example:
+
+```text
+backend/schemas.py
+```
+
+This file may contain request and response formats shared across the project.
+
+Everyone may need to read this file, but nobody should change it casually.
+
+Before changing a shared schema, tell the team because the change may affect:
+
+* The frontend request
+* The transcription endpoint
+* The checker
+* The response displayed in the interface
+
+A schema change should usually be made through its own pull request or clearly described in the pull request that requires it.
+
+---
+
+# 4. Week-by-Week Plan
+
+## Week 1 — Complete the Basic Spine
+
+The goal is to make one algebra problem travel through the complete system:
+
+```text
+Write
+→ Detect Line
+→ Transcribe
+→ Check
+→ Flag
+```
+
+### Person 1
+
+* Finish the drawing canvas
+* Record stylus strokes
+* Add ruled writing rows
+* Detect or manually confirm when a line is finished
+* Export a finished line as a PNG
+* Send the image to `/transcribe`
+* Send the returned text to `/check`
+* Display the verdict on the correct handwritten line
+
+### Person 2
+
+* Confirm that the current `/check` endpoint is stable
+* Add tests for the existing algebra judge
+* Improve support for basic one-variable linear equations
+* Return clear results for:
+
+  * Correct steps
+  * Incorrect steps
+  * Unsupported steps
+* Document the request and response expected by `/check`
+
+### Person 3
+
+* Confirm that `/transcribe` is running
+* Test the endpoint through FastAPI `/docs`
+* Test several handwritten math images
+* Improve the Gemini prompt
+* Return clean, structured transcription output
+* Begin collecting examples of handwriting that fails
+
+### End-of-Week Goal
+
+A student can write one supported algebra problem and the app correctly identifies an incorrect line.
+
+---
+
+## Week 2 — Hints and Interface Improvement
+
+The goal is to make the app feel like a tutoring product rather than only a technical test.
+
+### Person 1
+
+* Improve the canvas interface
+* Show which line is currently active
+* Underline flagged lines clearly
+* Add controls for requesting hints
+* Display the three hint levels
+* Add reset and new-problem controls
+* Improve loading and error states
+
+### Person 2
+
+* Continue expanding algebra coverage
+* Add more judge tests
+* Improve explanations returned by the judge
+* Create structured error categories, such as:
+
+  * Sign error
+  * Arithmetic error
+  * Incorrect division
+  * Incorrect distribution
+* Ensure the judge returns enough information for hints without returning the answer
+
+### Person 3
+
+* Build the hint endpoint
+* Create the three hint levels:
+
+  1. Where to look
+  2. What type of mistake occurred
+  3. A conceptual explanation
+* Test that hints do not reveal the answer
+* Add fallback hint templates
+* Test transcription with more handwriting samples
+
+### End-of-Week Goal
+
+The algebra workflow works end to end and a student can request increasingly detailed hints for a flagged line.
+
+---
+
+## Week 3 — Chemistry and Student Testing
+
+The goal is to add one narrow chemistry demonstration and test the application with real users.
+
+### Person 1
+
+* Add any drawing tools needed for chemistry
+* Make molecular structures easy to draw
+* Ensure the canvas handles lines, letters, and bonds
+* Connect chemistry drawings to the transcription or recognition endpoint
+* Display chemistry verdicts in the interface
+
+### Person 2
+
+* Build the chemistry judge
+* Integrate RDKit
+* Define a narrow set of supported molecule types
+* Compare expected and submitted structures
+* Detect simple issues such as:
+
+  * Missing atoms
+  * Incorrect bonds
+  * Incorrect connectivity
+* Add tests for the rehearsed chemistry examples
+
+### Person 3
+
+* Test recognition of hand-drawn molecular structures
+* Integrate or test MolScribe if needed
+* Organize a test session with approximately five students
+* Record:
+
+  * Incorrect line segmentation
+  * Incorrect transcription
+  * Slow responses
+  * Confusing hints
+  * Interface problems
+* Create a prioritized list of failures to fix
+
+### End-of-Week Goal
+
+The app reliably demonstrates algebra and has at least one narrow chemistry example that works under controlled conditions.
+
+---
+
+## Week 4 — Bug Fixing and Demo Preparation
+
+The goal is stability, not new features.
+
+Everyone should stop adding major functionality by approximately the middle of the week.
+
+### Person 1
+
+* Fix interface bugs
+* Improve tablet responsiveness
+* Test on iPad and Samsung if available
+* Improve the visual presentation
+* Practice the exact demo flow
+
+### Person 2
+
+* Fix judge errors
+* Improve handling of unsupported problems
+* Confirm all demo problems return the expected verdicts
+* Add regression tests for previously fixed bugs
+
+### Person 3
+
+* Fix transcription failures
+* Improve prompt reliability
+* Reduce confusing hints
+* Test API latency
+* Prepare backup handwriting images or typed inputs in case live transcription fails
+
+### Team Tasks
+
+* Select the exact demo problems
+* Rehearse the presentation
+* Test the project from a clean startup
+* Write setup instructions
+* Confirm all environment variables are documented
+* Confirm the app works from the presentation device
+* Prepare a fallback recorded demo
+* Freeze major feature development
+
+### End-of-Week Goal
+
+The application works consistently for the planned demonstration and the team knows how to recover if one part fails live.
+
+---
+
+# 5. Suggested Branches
+
+The team can begin with these branches:
+
+### Person 1
+
+```bash
+git checkout -b frontend-canvas
+```
+
+### Person 2
+
+```bash
+git checkout -b backend-judge
+```
+
+### Person 3
+
+```bash
+git checkout -b ai-transcription
+```
+
+After those branches are merged, create smaller branches for later tasks, such as:
+
+```text
+frontend-hints
+frontend-chemistry
+judge-algebra-expansion
+judge-chemistry
+ai-hints
+transcription-testing
+demo-bugfixes
+```
+
+Branches should focus on one clear piece of work rather than remaining open for the entire project.
+
+---
+
+# 6. Pull Request Expectations
+
+Every pull request should include:
+
+* What was changed
+* Why it was changed
+* How to run or test it
+* Any files or behavior that may affect teammates
+* A screenshot or example response when relevant
+
+A simple pull request description could look like:
+
+```text
+Added canvas stroke capture and PNG export.
+
+How to test:
+1. Run the frontend.
+2. Draw inside the canvas.
+3. Press Finish Line.
+4. Confirm that a PNG preview appears.
+
+This does not yet call the transcription endpoint.
+```
+
+At least one teammate should confirm that the pull request runs before it is merged.
+
+---
+
+# 7. Ownership Section for PROJECT_NOTES.md
+
+Add the following section to `PROJECT_NOTES.md`:
+
+## Ownership
+
+### Person 1 — Frontend and Ink
+
+Owns:
+
+```text
+frontend/
+```
+
+Responsibilities:
+
+* Canvas
+* Stylus capture
+* Segmentation
+* PNG export
+* User interface
+* Displaying verdicts and hints
+
+### Person 2 — Backend and Judges
+
+Owns:
+
+```text
+backend/judge/
+backend/main.py
+```
+
+Responsibilities:
+
+* FastAPI routing
+* Algebra judge
+* Chemistry judge
+* SymPy
+* RDKit
+* Judge testing
+
+### Person 3 — AI and Testing
+
+Owns:
+
+```text
+backend/transcription.py
+backend/hints.py
+tests/transcription/
+```
+
+Responsibilities:
+
+* Gemini transcription
+* Prompt testing
+* Hint generation
+* Handwriting failure analysis
+* Student testing
+
+### Shared Files
+
+Shared files such as:
+
+```text
+backend/schemas.py
+README.md
+PROJECT_NOTES.md
+```
+
+should not be changed without notifying the rest of the team.
+
+---
+
+# 8. Immediate Next Steps
+
+Before starting additional feature work:
+
+1. Make sure nobody is committing directly to `main`.
+2. Make sure each person creates their own branch.
+3. Add the ownership section to `PROJECT_NOTES.md`.
+4. Confirm that `/transcribe` appears in FastAPI `/docs`.
+5. Test `/transcribe` with one sample image.
+6. Connect the frontend PNG export to `/transcribe`.
+7. Connect the transcription result to `/check`.
+8. Get one complete algebra example working before expanding the scope.
+
+The highest-priority objective is still the project spine:
+
+```text
+Stroke in
+→ Transcription
+→ Verdict out
+```
+
+Everything else should come after that works.
+
