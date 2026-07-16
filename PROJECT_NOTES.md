@@ -112,3 +112,34 @@ The verdict stage was built first, out of order, because it was the only stage w
 - **RDKit:** a Python library for chemistry. Used to verify molecular structures.
 - **Hint ladder:** the three escalating hint levels a student can request for a flagged line.
 - **The spine:** shorthand for the minimal end-to-end path: stroke in, verdict out.
+
+## 12. Tasks
+
+Before splitting tasks, one structural thing needs to change: up to now you've been committing straight to main. That's fine solo, it breaks immediately with three people, someone's git push will get rejected the moment two of you edit the same file in the same week. Fix that first, then the plan.
+Git workflow for 3 people
+
+Nobody commits directly to main from now on. main only receives finished, working code via pull request.
+Each person works on a branch named after their piece: git checkout -b frontend-canvas, git checkout -b backend-judge, git checkout -b ai-transcription.
+Push the branch, open a PR on GitHub, at least one teammate looks at it before merging. Doesn't need to be a big review, just a second pair of eyes, "does this run" is enough at this stage.
+Pull main into your branch (git pull origin main) before starting each new work session, so you're not diverging for days.
+
+This costs a little overhead now and saves you from a merge disaster the week before your demo.
+Splitting the work: by architecture layer, not by "half the file each"
+Your five-stage pipeline (ink → segmentation → transcription → verdict → hint) already has natural seams. Assign by seam, so two people are rarely editing the same file:
+Person 1 — Frontend / Ink (you, since you're already deep in this)
+Canvas, stroke capture, segmentation, the pen-lift-finished trigger, rendering a line to PNG, all UI. Owns frontend/ entirely.
+Person 2 — Backend / Judges (David)
+The FastAPI app, the judge interface, extending algebra coverage toward precalc, and — this is the meaty one starting week 3 — the RDKit chemistry judge. Owns backend/judge/ and backend/main.py's routing.
+Person 3 — AI layer / Transcription / Testing (your third teammate)
+The /transcribe endpoint, prompt tuning against messy real handwriting, the hint-generation calls once we get there, and running the week 3 real-student test since this person will know the transcription failure modes best. Owns backend/transcription.py and, later, backend/hints.py.
+Why this split and not "frontend person vs backend person" 50/50: with two people on backend it'd collide constantly on main.py. This way each person owns files the others rarely touch, and the seams between you are the request/response contracts already written in schemas.py, which is the one shared file everyone reads but nobody should casually change without telling the others.
+Week-by-week, who's blocked on whom
+
+Week 1 (now): you finish the spine wiring (canvas → transcribe → check). David starts extending the algebra judge to handle more equation types in parallel, since it doesn't depend on your wiring. Person 3 stress-tests /transcribe with deliberately bad handwriting once your PNG export exists, tunes the prompt.
+Week 2: hint ladder. This is naturally Person 3 (writes the hint prompt/endpoint) + you (renders it in the UI). David keeps hardening the algebra judge, unaffected.
+Week 3: David builds the chemistry judge, this is his biggest chunk. You build the drawing/UI affordances chemistry needs if any differ from algebra. Person 3 runs the 5-student test session and logs where transcription breaks on real kids' handwriting.
+Week 4: everyone stops building new things, this week is bug-fixing, latency, and demo rehearsal only. No new branches after roughly the midpoint of week 4, that's the freeze.
+
+One habit worth starting this week
+Add a short section to PROJECT_NOTES.md called "Ownership" listing who owns which files, so when something breaks nobody has to ask "whose is this." I can add that now if you want, or you can jot it in as the assignments settle.
+Confirm the split makes sense for your actual team (I'm guessing roles, correct me if David or your third person wants a different piece), and then let's get back to closing the spine, the /transcribe endpoint just needs the restart-and-check-/docs step to confirm it's wired before we touch the frontend.
