@@ -679,3 +679,151 @@ Stroke in
 
 Everything else should come after that works.
 
+---
+
+# 13. Status Update and Expanded Roadmap (July 19, 2026)
+
+This section reflects what has actually been built and lays out a more
+ambitious, more detailed plan than the original week-by-week sketch above.
+Nothing above this line has been edited; where this section disagrees with
+older sections, this section is current.
+
+## 13.1 Corrections to earlier sections
+
+- **Transcription model is Gemini 2.5 Flash via Vertex AI**, not Claude.
+  Auth is Application Default Credentials through the gcloud CLI — never
+  raw API keys. Cost per transcribed line is a fraction of a cent
+  (thinking disabled, output capped at 64 tokens, temperature 0).
+- **Hints are deterministic templates, not an AI call.** This is stronger
+  than the original plan: the hint generator only ever receives a line
+  number and an error category — it never sees the solution, the judge's
+  internal detail, or the student's actual math — so it *structurally
+  cannot* leak an answer. Zero cost, zero latency, zero hallucination
+  risk. An AI-phrased layer can be added later on top of the same
+  categories if we want friendlier wording.
+- **The project lives in a shared 30-student GCP project** (`cs-sail-2b08`).
+  Billing there includes many other workloads; CheckMate's own usage is
+  cents. Long-term: move to a dedicated project with a budget alert.
+
+## 13.2 What is DONE (verified working, July 19)
+
+The full spine works end to end, plus most of Week 2:
+
+- Canvas with stylus capture, palm rejection, coalesced pointer events.
+- Row-based line segmentation with on-canvas debug boxes.
+- Ruled lines drawn light-blue and thin, deliberately subordinate to ink
+  (dark ruling was being misread by the vision model as `=`/`-` marks).
+- Clean per-line PNG export (crop + paper background, debug overlay
+  excluded) wired to `/transcribe` via a Finish Line button.
+- `/transcribe`: Gemini 2.5 Flash, deterministic config, prompt hardened
+  against ruled-line confusion and LaTeX/Greek output; output normalized
+  (unicode minus/×/÷/superscripts → ASCII); explicit `unreadable` flag;
+  API failures return a clean 502 instead of a crash.
+- `/check`: SymPy equivalence checking with **deterministic error
+  classification** — flagged steps are categorized as `sign`,
+  `arithmetic`, `division`, `distribution`, `unsupported` (e.g. a
+  variable the problem never used, usually a transcription misread), or
+  generic `algebraic`, by testing exact symbolic "repairs" (e.g. does
+  flipping one term's sign make the step valid?). No guessing.
+- `/hint`: three-level ladder (where to look → mistake type → concept),
+  per-category templates matching every judge category, fallbacks for
+  unknown categories, answer-leak tests in CI.
+- Frontend verdict display: green/red boxes per line, red underline on
+  flagged lines, side panel listing every transcribed line with an
+  **editable text field** — a misread line is a one-second typed fix that
+  re-runs the (free) checker, which is also the demo safety net.
+- 53 backend tests passing (judge classification + hint safety).
+- Transcription failure log with real handwriting samples and identified
+  patterns (`backend/tests/transcription/failures.md`).
+
+## 13.3 Known caveats (honest list, check before demo)
+
+- Error classification is heuristic-ordered: sign is tested before
+  distribution before scaled-offset. A mistake that fits two categories
+  gets the first match. This is by design (deterministic) but means
+  labels are "best deterministic explanation," not ground truth.
+- The distribution check requires the parenthesized form to still be the
+  current reference line; once a student validly expands, later steps
+  can't be classified as distribution errors (correct behavior, worth
+  knowing).
+- The `division` classifier only runs on single-variable linear steps.
+- Segmentation is row-based: writing that drifts across ruled rows
+  mis-groups. The pen-lift + vertical-gap rule from section 4 is NOT yet
+  implemented — rows only.
+- Multi-line rework: re-finishing a row replaces that row's transcription
+  silently. There is no undo.
+- `Eq` degenerate case: a line like `12 = 12` parses to a boolean and is
+  not handled gracefully (rare; low priority).
+- The problem is still *typed* into a box, not handwritten (deliberate
+  decision, July 18 — revisit only after student testing).
+
+## 13.4 Expanded roadmap — algebra depth first, then breadth
+
+### Milestone A — "Every mistake gets a precise hint" (Person 2 + 3)
+
+- Judge: classify more mistake types deterministically:
+  - combining unlike terms (`3x + 2 = 5x`)
+  - dropped term (a term present in ref vanishes with no operation)
+  - swapped sides without negation
+  - multiplying only one side
+- Judge: support fractions and decimals robustly (`x/2 + 3 = 7`,
+  `0.5x = 4`), including classifying "cleared the fraction wrong."
+- Judge: two-variable linear systems (substitution steps) — stretch.
+- Hints: per-category level-1 variants that reference the *operation*
+  between the two lines ("you subtracted something from both sides —
+  check what you subtracted") — still template-only, still no values.
+- Hint quality tests: for every classified category, an automated test
+  asserting the hint never contains any token from the student's work.
+
+### Milestone B — "The canvas feels like paper" (Person 1)
+
+- Implement true pen-lift + vertical-gap segmentation (section 4's rule),
+  replacing pure row-bucketing; keep rows as a fallback.
+- Auto-finish: a line is sent automatically after N seconds of pen
+  inactivity below it (no button press) — the button stays as backup.
+- Active-line highlight while writing; subtle checkmark animation on a
+  green verdict.
+- Undo last stroke; erase mode; stroke smoothing (quadratic curves
+  through coalesced points).
+- Tablet testing over LAN (laptop IP + port on iPad/Samsung browser);
+  document touch-action/pressure quirks per device.
+
+### Milestone C — "Trustworthy transcription" (Person 3)
+
+- Confidence surfacing: prompt Gemini for a per-line confidence token;
+  below threshold, the UI pre-focuses the correction field.
+- Failure-driven prompt iteration: every new failure goes into
+  `failures.md` with expected/actual; prompt changes must cite which
+  failure they fix and must not regress the sample set.
+- Batch re-run harness against the sample folder with a diff report
+  (already exists: `tests/transcription/run_samples.py`).
+- Latency measurement: log server-side transcription time per call;
+  target < 2s p95 on shared WiFi.
+- Fallback path: if `/transcribe` errors twice in a row, the UI offers
+  typed input for the line automatically (backup for live demo).
+
+### Milestone D — "More than one problem" (team)
+
+- Problem presets: a dropdown of rehearsed demo problems (each with known
+  solution path and known judge coverage) instead of free typing.
+- Multi-problem sessions: Clear becomes "next problem," with a session
+  summary (lines written, mistakes made, hints used).
+- Per-student session log (JSON download) — the seed of the
+  teacher/parent visibility feature in section 3.
+
+### Milestone E — Chemistry (unchanged from section 4/8 plan, after A–C)
+
+- RDKit judge behind the same `Judge` interface; MolScribe or Gemini
+  vision for structure recognition; narrow rehearsed molecule set only.
+
+## 13.5 Working agreements added this week
+
+- No live Gemini calls for plumbing/wiring tests — stub or use recorded
+  samples; real calls only for genuine transcription-quality testing.
+- All work goes through feature branches and PRs (current branch:
+  `ai-transcription`); cross-ownership edits are allowed when they
+  unblock the spine but must be called out in the PR description so the
+  owner reviews them.
+- `backend/schemas.py` changes are additive-only where possible and are
+  announced in the PR that needs them.
+

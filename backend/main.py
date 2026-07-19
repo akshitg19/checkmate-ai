@@ -1,8 +1,15 @@
-from fastapi import FastAPI
-from schemas import CheckRequest, CheckResponse, TranscribeRequest, TranscribeResponse
+from fastapi import FastAPI, HTTPException
+from schemas import (
+    CheckRequest,
+    CheckResponse,
+    HintRequest,
+    HintResponse,
+    TranscribeRequest,
+    TranscribeResponse,
+)
 from transcription import transcribe_line
+from hints import generate_hint
 from judge import AlgebraJudge
-from schemas import CheckRequest, CheckResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="CheckMate API")
@@ -30,5 +37,17 @@ def check_steps(req: CheckRequest):
 
 @app.post("/transcribe", response_model=TranscribeResponse)
 def transcribe(req: TranscribeRequest):
-    text = transcribe_line(req.image_base64)
-    return TranscribeResponse(text=text)
+    try:
+        text, unreadable = transcribe_line(req.image_base64)
+    except Exception as e:
+        # Auth expiry, network failure, quota -- surface as a gateway error
+        # the frontend can show, instead of an opaque 500.
+        raise HTTPException(status_code=502, detail=f"Transcription failed: {e}")
+    return TranscribeResponse(text=text, unreadable=unreadable)
+
+@app.post("/hint", response_model=HintResponse)
+def hint(req: HintRequest):
+    try:
+        return generate_hint(req)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
