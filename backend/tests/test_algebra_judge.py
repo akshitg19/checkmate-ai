@@ -37,6 +37,32 @@ def test_bare_arithmetic_valid():
     assert v[0].valid
 
 
+def test_identity_equation_does_not_crash():
+    v = check("x = x", "x = x")
+    assert v[0].valid
+
+
+def test_contradictions_preserve_the_empty_solution_set():
+    v = check("x = x + 1", "0 = 1")
+    assert v[0].valid
+
+
+def test_constant_true_equations_are_equivalent():
+    v = check("1 = 1", "2 = 2")
+    assert v[0].valid
+
+
+def test_true_and_false_constant_equations_are_not_equivalent():
+    v = check("1 = 1", "1 = 2")
+    assert not v[0].valid
+
+
+def test_quadratic_problem_is_reported_as_unsupported():
+    v = check("x^2 = 1", "x = 1")
+    assert v[0].line_number == 0
+    assert v[0].error_type == "unsupported"
+
+
 # --- error classification ----------------------------------------------
 
 def test_sign_error():
@@ -53,7 +79,8 @@ def test_sign_error_on_variable_term():
 
 
 def test_arithmetic_error():
-    # correct: 3x = 2x + 17; student wrote +7 (12+5 miscomputed)
+    # Both sides retain the same variable terms while both constants change,
+    # which is the judge's deliberately narrow arithmetic-error pattern.
     v = check("3x - 12 = 2x + 5", "3x = 2x + 7")
     assert not v[0].valid
     assert v[0].error_type == "arithmetic"
@@ -89,7 +116,25 @@ def test_bare_arithmetic_wrong_value():
 def test_unrelated_garbage_falls_back_to_algebraic():
     v = check("3x - 12 = 2x + 5", "5x = 40")
     assert not v[0].valid
-    assert v[0].error_type in ("algebraic", "arithmetic", "division")
+    assert v[0].error_type == "algebraic"
+
+
+def test_unrelated_linear_equation_is_not_mislabeled_as_division():
+    v = check("x = 2", "3x = 100")
+    assert not v[0].valid
+    assert v[0].error_type == "algebraic"
+
+
+def test_unexplained_constant_change_is_not_mislabeled_as_arithmetic():
+    v = check("x = 2", "x = 999")
+    assert not v[0].valid
+    assert v[0].error_type == "algebraic"
+
+
+def test_solution_equivalent_to_distribution_mistake_is_not_mislabeled():
+    v = check("3(x - 4) = 2x + 5", "x = 9")
+    assert not v[0].valid
+    assert v[0].error_type == "algebraic"
 
 
 # --- structural failures ------------------------------------------------
@@ -118,6 +163,101 @@ def test_unparseable_problem():
     v = judge.check("][", [Step(line_number=1, latex="x = 1")])
     assert v[0].error_type == "parse_error"
     assert v[0].line_number == 0
+
+
+def test_parse_expression_payload_is_rejected_without_execution():
+    v = check("x = 1", "__import__('os').getcwd() = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "parse_error"
+
+
+def test_variable_denominator_is_unsupported_instead_of_cancelled():
+    v = check("x = 1", "x(x - 1)/(x - 1) = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
+
+
+def test_x_over_x_problem_is_unsupported_instead_of_losing_zero():
+    v = check("x/x = 1", "1 = 1")
+    assert v[0].line_number == 0
+    assert v[0].error_type == "unsupported"
+
+
+def test_cancelled_nonlinear_problem_is_still_unsupported():
+    v = check("x(x - x) + x = 1", "x = 1")
+    assert v[0].line_number == 0
+    assert v[0].error_type == "unsupported"
+
+
+def test_cancelled_nonlinear_step_is_still_unsupported():
+    v = check("x = 1", "x(x - x) + x = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
+
+
+def test_function_problem_is_unsupported():
+    v = check("sin(x) = 0", "x = 0")
+    assert v[0].line_number == 0
+    assert v[0].error_type == "unsupported"
+
+
+def test_problem_with_multiple_variables_is_unsupported():
+    v = check("x + y = 2", "x = 1")
+    assert v[0].line_number == 0
+    assert v[0].error_type == "unsupported"
+
+
+def test_cancelled_extra_variable_is_still_unsupported():
+    v = check("x = 1", "x + y - y = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
+
+
+def test_symbolic_bare_expression_is_unsupported():
+    v = check("x = 1", "x")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
+
+
+def test_decimal_arithmetic_is_exact():
+    v = check("0.1 + 0.2", "0.3")
+    assert v[0].valid
+
+
+def test_multiple_equals_is_parse_error():
+    v = check("x = 1", "x = 1 = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "parse_error"
+
+
+def test_large_scientific_notation_is_rejected_before_parsing():
+    v = check("1", "1e999999999999")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
+
+
+def test_multiple_decimal_points_are_not_treated_as_multiplication():
+    v = check("0.36", "1.2.3")
+    assert not v[0].valid
+    assert v[0].error_type == "parse_error"
+
+
+def test_whitespace_between_numbers_is_not_implicit_multiplication():
+    v = check("2", "1 2")
+    assert not v[0].valid
+    assert v[0].error_type == "parse_error"
+
+
+def test_floor_division_is_not_accepted_as_student_notation():
+    v = check("2", "5//2")
+    assert not v[0].valid
+    assert v[0].error_type == "parse_error"
+
+
+def test_function_style_notation_is_not_treated_as_multiplication():
+    v = check("f = 1", "f(1) = 1")
+    assert not v[0].valid
+    assert v[0].error_type == "unsupported"
 
 
 # --- cascade behavior ---------------------------------------------------

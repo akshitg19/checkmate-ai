@@ -1,14 +1,18 @@
 import base64
+import binascii
+import os
 import re
 
 from google import genai
+from google.auth.exceptions import GoogleAuthError
+from google.genai import errors
 from google.genai import types
 
-_client = genai.Client(
-    vertexai=True,
-    project="cs-sail-2b08",
-    location="us-central1",
-)
+DEFAULT_PROJECT = "cs-sail-2b08"
+DEFAULT_LOCATION = "us-central1"
+DEFAULT_MODEL = "gemini-2.5-flash"
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 PROMPT = (
     "This image shows one line of a student's handwritten algebra work, "
@@ -59,25 +63,55 @@ def _clean(text: str) -> str:
     return text.strip()
 
 
-def transcribe_line(image_base64: str) -> tuple[str, bool]:
-    """Returns (text, unreadable). Raises on API/auth failure -- the caller
-    (main.py) turns that into an HTTP error instead of a raw 500."""
-    image_bytes = base64.b64decode(image_base64)
-    response = _client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            PROMPT,
-        ],
-        # thinking_budget=0: 2.5 Flash "thinks" by default and thinking tokens
-        # bill as output -- pure waste for OCR. max_output_tokens caps a
-        # runaway response; one transcribed line is ~15 tokens.
-        config=types.GenerateContentConfig(
-            temperature=0,
-            max_output_tokens=64,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        ),
+class TranscriptionInputError(ValueError):
+    """The caller supplied an image that cannot be sent for transcription."""
+
+
+class TranscriptionServiceError(RuntimeError):
+    """The external transcription service could not complete the request."""
+
+
+def _create_client() -> genai.Client:
+    return genai.Client(
+        vertexai=True,
+        project=os.getenv("GOOGLE_CLOUD_PROJECT", DEFAULT_PROJECT),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", DEFAULT_LOCATION),
     )
-    text = _clean(response.text or "")
-    unreadable = text == "UNREADABLE" or not text
+
+
+def _decode_png(image_base64: str) -> bytes:
+    try:
+        image_bytes = base64.b64decode(image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise TranscriptionInputError("image_base64 must be valid Base64") from exc
+
+    if not image_bytes.startswith(PNG_SIGNATURE):
+        raise TranscriptionInputError("image_base64 must contain a PNG image")
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        raise TranscriptionInputError("PNG image must be 5 MB or smaller")
+    return image_bytes
+
+
+def transcribe_line(image_base64: str) -> tuple[str, bool]:
+    """Return normalized text and whether the model could read the PNG."""
+    image_bytes = _decode_png(image_base64)
+    try:
+        client = _create_client()
+        response = client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                PROMPT,
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=64,
+                thinking_config=types.ThinkingConfig(thinking_budget=0),
+            ),
+        )
+        text = _clean(response.text or "")
+    except (errors.APIError, GoogleAuthError, OSError, ValueError) as exc:
+        raise TranscriptionServiceError("Gemini transcription request failed") from exc
+
+    unreadable = not text or text.upper() == "UNREADABLE"
     return text, unreadable

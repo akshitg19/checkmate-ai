@@ -1,21 +1,32 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 
 const LINE_HEIGHT = 64;
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const LINE_PAD = 16;
+
+function getVerdictStatus(verdict) {
+  if (!verdict) return null;
+  // `status` is the API source of truth. Keep the fallback while older
+  // backends are still in circulation during local development.
+  return verdict.status ?? (verdict.valid ? "valid" : "invalid");
+}
 
 // Group strokes into lines by which ruled row each stroke's
 // vertical center falls into. Returns a map: rowIndex -> strokes[].
+function getStrokeRow(stroke) {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of stroke.points) {
+    if (point.y < minY) minY = point.y;
+    if (point.y > maxY) maxY = point.y;
+  }
+  return Math.floor((minY + maxY) / 2 / LINE_HEIGHT);
+}
+
 function segmentIntoLines(strokes) {
   const lines = new Map();
   for (const stroke of strokes) {
-    let minY = Infinity, maxY = -Infinity;
-    for (const pt of stroke.points) {
-      if (pt.y < minY) minY = pt.y;
-      if (pt.y > maxY) maxY = pt.y;
-    }
-    const centerY = (minY + maxY) / 2;
-    const row = Math.floor(centerY / LINE_HEIGHT);
+    const row = getStrokeRow(stroke);
     if (!lines.has(row)) lines.set(row, []);
     lines.get(row).push(stroke);
   }
@@ -58,12 +69,25 @@ function renderLineToPng(lineStrokes) {
   ctx.stroke();
 
   ctx.strokeStyle = "#1a1a2e";
+  ctx.fillStyle = "#1a1a2e";
   ctx.lineWidth = 2.5;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   for (const s of lineStrokes) {
     const pts = s.points;
-    if (pts.length < 2) continue;
+    if (pts.length === 0) continue;
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(
+        pts[0].x - minX + LINE_PAD,
+        pts[0].y - minY + LINE_PAD,
+        ctx.lineWidth / 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      continue;
+    }
     ctx.beginPath();
     ctx.moveTo(pts[0].x - minX + LINE_PAD, pts[0].y - minY + LINE_PAD);
     for (let i = 1; i < pts.length; i++) {
@@ -79,14 +103,23 @@ export default function App() {
   const canvasRef = useRef(null);
   const [strokes, setStrokes] = useState([]); // finished strokes
   const currentStroke = useRef(null); // stroke in progress
+  const activePointerId = useRef(null);
+  const transcriptionRequestId = useRef(0);
+  const transcriptionRowRef = useRef(null);
+  const checkRequestId = useRef(0);
+  const hintRequestId = useRef(0);
+  const problemRef = useRef("");
+  const linesRef = useRef([]);
+  const activeRowRef = useRef(null);
   const [transcribing, setTranscribing] = useState(false);
-  const [lastResult, setLastResult] = useState(null); // { text } | { error }
+  const [lastResult, setLastResult] = useState(null); // { error } | { warning }
 
   const [problem, setProblem] = useState("");
   // One entry per finished handwritten line:
   // { row, text, unreadable } -- text is editable in the side panel, so a
   // misread transcription is a one-second typed fix instead of a dead end.
   const [lines, setLines] = useState([]);
+  const [activeRow, setActiveRow] = useState(null);
   const [verdictsByLine, setVerdictsByLine] = useState(new Map()); // row -> LineVerdict
   const [firstWrongLine, setFirstWrongLine] = useState(null);
 
@@ -106,12 +139,33 @@ export default function App() {
 
   const handlePointerDown = (e) => {
     if (e.pointerType === "touch") return; // palm rejection
+    if (activePointerId.current !== null) return;
+    const firstPoint = getPoint(e);
+    activePointerId.current = e.pointerId;
+
+    // The visible handwriting no longer matches the last transcription.
+    // Hide dependent feedback until this row is finished again.
+    ++transcriptionRequestId.current;
+    transcriptionRowRef.current = null;
+    ++checkRequestId.current;
+    ++hintRequestId.current;
+    setTranscribing(false);
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setHintLevel(0);
+    setHintText(null);
+    setHintLoading(false);
+    setLastResult(null);
+
     canvasRef.current.setPointerCapture(e.pointerId);
-    currentStroke.current = { points: [getPoint(e)], pointerType: e.pointerType };
+    currentStroke.current = { points: [firstPoint], pointerType: e.pointerType };
   };
 
   const handlePointerMove = (e) => {
-    if (!currentStroke.current) return;
+    if (
+      !currentStroke.current ||
+      e.pointerId !== activePointerId.current
+    ) return;
     const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of events) {
       currentStroke.current.points.push(getPoint(ev));
@@ -119,54 +173,142 @@ export default function App() {
     drawFrame();
   };
 
-  const handlePointerUp = () => {
-    if (!currentStroke.current) return;
+  const handlePointerUp = (e) => {
+    if (
+      !currentStroke.current ||
+      e.pointerId !== activePointerId.current
+    ) return;
     const finished = currentStroke.current;
     currentStroke.current = null;
+    activePointerId.current = null;
+    const row = getStrokeRow(finished);
+    activeRowRef.current = row;
+    setActiveRow(row);
     setStrokes((prev) => [...prev, finished]);
+  };
+
+  const handlePointerCancel = (e) => {
+    if (e.pointerId !== activePointerId.current) return;
+    currentStroke.current = null;
+    activePointerId.current = null;
+    drawFrame();
   };
 
   // Lines that can be sent to the judge: have text and were readable
   // (an unreadable line whose text the student typed in counts).
-  const toSteps = (lineArr) =>
-    lineArr
+  const toJudgeLines = (lineArr) =>
+    [...lineArr]
+      .sort((a, b) => a.row - b.row)
+      .map((line, index) => ({
+        ...line,
+        line_number: index + 1,
+      }))
       .filter((l) => l.text.trim() && l.text !== "UNREADABLE")
-      .map((l) => ({ line_number: l.row, latex: l.text }))
-      .sort((a, b) => a.line_number - b.line_number);
+      .map((l) => ({
+        row: l.row,
+        line_number: l.line_number,
+        latex: l.text,
+      }));
 
   // Re-judge the whole page. Free (pure SymPy server-side), so it runs on
   // every finished line and every manual correction.
-  const recheck = async (lineArr) => {
+  const recheck = async (lineArr, problemText = problemRef.current) => {
+    const requestId = ++checkRequestId.current;
+    ++hintRequestId.current;
+
     // Any change to the work invalidates the current hint ladder.
     setHintLevel(0);
     setHintText(null);
+    setHintLoading(false);
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setLastResult(null);
 
-    const stepList = toSteps(lineArr);
-    if (!problem.trim() || stepList.length === 0) {
-      setVerdictsByLine(new Map());
-      setFirstWrongLine(null);
+    const judgeLines = toJudgeLines(lineArr);
+    const stepList = judgeLines.map(({ line_number, latex }) => ({
+      line_number,
+      latex,
+    }));
+    const rowByLineNumber = new Map(
+      judgeLines.map((line) => [line.line_number, line.row])
+    );
+    if (!problemText.trim() || stepList.length === 0) {
       return;
     }
     try {
       const res = await fetch(`${API_BASE}/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ problem, steps: stepList }),
+        body: JSON.stringify({ problem: problemText, steps: stepList }),
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
-      setVerdictsByLine(new Map(data.verdicts.map((v) => [v.line_number, v])));
-      setFirstWrongLine(data.first_wrong_line);
+      if (requestId !== checkRequestId.current) return;
+
+      const problemVerdict = data.verdicts.find((v) => v.line_number === 0);
+      const problemError = data.problem_error ?? problemVerdict?.error_type;
+      if (problemError) {
+        setLastResult({
+          warning:
+            problemError === "unsupported"
+              ? "This problem is outside the current one-variable linear scope."
+              : "The problem could not be parsed. Check the format and try again.",
+        });
+        return;
+      }
+
+      setVerdictsByLine(
+        new Map(
+          data.verdicts
+            .filter((v) => v.line_number > 0)
+            .map((v) => [rowByLineNumber.get(v.line_number), v])
+            .filter(([row]) => row !== undefined)
+        )
+      );
+      setFirstWrongLine(
+        data.first_wrong_line > 0 ? data.first_wrong_line : null
+      );
     } catch (e) {
+      if (requestId !== checkRequestId.current) return;
+      setVerdictsByLine(new Map());
+      setFirstWrongLine(null);
+      setHintLevel(0);
+      setHintText(null);
       setLastResult({ error: `Check failed: ${e.message}` });
     }
   };
 
+  const handleProblemChange = (e) => {
+    const nextProblem = e.target.value;
+    problemRef.current = nextProblem;
+    setProblem(nextProblem);
+
+    // A verdict belongs to the exact problem text that was checked. Hide it
+    // immediately while the student edits and invalidate any in-flight
+    // check/hint responses so they cannot restore stale feedback.
+    ++checkRequestId.current;
+    ++hintRequestId.current;
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setHintLevel(0);
+    setHintText(null);
+    setHintLoading(false);
+    setLastResult(null);
+  };
+
+  const handleProblemEditDone = () => {
+    recheck(linesRef.current, problemRef.current);
+  };
+
   const handleFinishLine = async () => {
     const segLines = segmentIntoLines(strokes);
-    if (segLines.size === 0) return;
-    const lastRow = Math.max(...segLines.keys());
-    const lineStrokes = segLines.get(lastRow);
+    const targetRow = activeRowRef.current;
+    if (segLines.size === 0 || targetRow === null || !segLines.has(targetRow)) {
+      return;
+    }
+    const requestId = ++transcriptionRequestId.current;
+    transcriptionRowRef.current = targetRow;
+    const lineStrokes = segLines.get(targetRow);
 
     const dataUrl = renderLineToPng(lineStrokes);
     const imageBase64 = dataUrl.split(",")[1]; // strip "data:image/png;base64,"
@@ -186,44 +328,73 @@ export default function App() {
         throw new Error(body?.detail || `${res.status} ${res.statusText}`);
       }
       const data = await res.json();
+      if (requestId !== transcriptionRequestId.current) return;
       text = data.text;
       unreadable = data.unreadable;
     } catch (e) {
+      if (requestId !== transcriptionRequestId.current) return;
+      transcriptionRowRef.current = null;
       setLastResult({ error: e.message });
       setTranscribing(false);
       return;
     }
+    if (requestId !== transcriptionRequestId.current) return;
+    transcriptionRowRef.current = null;
     setTranscribing(false);
 
     // Upsert this line (re-finishing a row replaces its transcription).
     const newLines = [
-      ...lines.filter((l) => l.row !== lastRow),
-      { row: lastRow, text: unreadable ? "" : text, unreadable },
+      ...linesRef.current.filter((l) => l.row !== targetRow),
+      { row: targetRow, text: unreadable ? "" : text, unreadable },
     ].sort((a, b) => a.row - b.row);
+    linesRef.current = newLines;
     setLines(newLines);
+    if (activeRowRef.current === targetRow) {
+      activeRowRef.current = null;
+      setActiveRow(null);
+    }
     await recheck(newLines);
   };
 
   // Manual correction in the side panel: update text, clear the unreadable
   // flag once the student has typed something, and re-judge.
   const handleLineEdit = (row, newText) => {
-    setLines((prev) =>
-      prev.map((l) =>
+    if (transcriptionRowRef.current === row) {
+      ++transcriptionRequestId.current;
+      transcriptionRowRef.current = null;
+      setTranscribing(false);
+    }
+    ++checkRequestId.current;
+    ++hintRequestId.current;
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setHintLevel(0);
+    setHintText(null);
+    setHintLoading(false);
+    setLastResult(null);
+    setLines((prev) => {
+      const next = prev.map((l) =>
         l.row === row
           ? { ...l, text: newText, unreadable: l.unreadable && !newText.trim() }
           : l
-      )
-    );
+      );
+      linesRef.current = next;
+      return next;
+    });
   };
 
   const handleLineEditDone = () => {
-    recheck(lines);
+    recheck(linesRef.current);
   };
 
   const handleGetHint = async () => {
     if (firstWrongLine === null || hintLevel >= 3) return;
     const nextLevel = hintLevel + 1;
-    const verdict = verdictsByLine.get(firstWrongLine);
+    const verdict = [...verdictsByLine.values()].find(
+      (item) => item.line_number === firstWrongLine
+    );
+    if (getVerdictStatus(verdict) !== "invalid") return;
+    const requestId = ++hintRequestId.current;
 
     setHintLoading(true);
     try {
@@ -231,7 +402,6 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          steps: toSteps(lines),
           line_number: firstWrongLine,
           error_type: verdict?.error_type ?? null,
           level: nextLevel,
@@ -239,18 +409,28 @@ export default function App() {
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
+      if (requestId !== hintRequestId.current) return;
       setHintLevel(data.level);
       setHintText(data.hint);
     } catch (e) {
+      if (requestId !== hintRequestId.current) return;
       setHintText(`Error: ${e.message}`);
     } finally {
-      setHintLoading(false);
+      if (requestId === hintRequestId.current) {
+        setHintLoading(false);
+      }
     }
   };
 
   const drawStroke = useCallback((ctx, stroke) => {
     const pts = stroke.points;
-    if (pts.length < 2) return;
+    if (pts.length === 0) return;
+    if (pts.length === 1) {
+      ctx.beginPath();
+      ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
@@ -285,6 +465,7 @@ export default function App() {
     // Ink strokes -- kept dark/opaque so they stay visually dominant over
     // the lighter ruling drawn above.
     ctx.strokeStyle = "#1a1a2e";
+    ctx.fillStyle = "#1a1a2e";
     ctx.lineWidth = 2.5;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
@@ -296,6 +477,11 @@ export default function App() {
     // a flagged one, the original neutral blue for lines not yet checked
     // (no problem set, or this line hasn't been sent to /check yet).
     const lines = segmentIntoLines(strokes);
+    const lineNumberByRow = new Map(
+      [...lines.keys()]
+        .sort((a, b) => a - b)
+        .map((row, index) => [row, index + 1])
+    );
     ctx.font = "11px sans-serif";
     for (const [row, lineStrokes] of lines) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -308,21 +494,24 @@ export default function App() {
         }
       }
       const verdict = verdictsByLine.get(row);
+      const verdictStatus = getVerdictStatus(verdict);
       const color =
-        verdict === undefined
+        verdictStatus === null
           ? "rgba(70, 130, 180, 0.8)"   // neutral blue -- not checked
-          : verdict.valid
+          : verdictStatus === "valid"
           ? "rgba(40, 160, 90, 0.9)"    // green -- correct
-          : "rgba(200, 50, 50, 0.9)";   // red -- flagged
+          : verdictStatus === "invalid"
+          ? "rgba(200, 50, 50, 0.9)"    // red -- incorrect
+          : "rgba(180, 120, 30, 0.9)";  // amber -- unsupported/unparseable
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
-      ctx.lineWidth = verdict && !verdict.valid ? 2 : 1;
+      ctx.lineWidth = verdictStatus === "invalid" ? 2 : 1;
       ctx.strokeRect(minX - 6, minY - 6, maxX - minX + 12, maxY - minY + 12);
-      ctx.fillText(`line ${row}`, minX - 6, minY - 10);
+      ctx.fillText(`line ${lineNumberByRow.get(row)}`, minX - 6, minY - 10);
 
       // The product's core visual: a flagged line gets a clear red
       // underline beneath the ink, like a teacher's mark.
-      if (verdict && !verdict.valid) {
+      if (verdictStatus === "invalid") {
         ctx.strokeStyle = "rgba(200, 50, 50, 0.9)";
         ctx.lineWidth = 3;
         ctx.beginPath();
@@ -350,6 +539,12 @@ export default function App() {
     drawFrame();
   }, [strokes, drawFrame]);
 
+  const activeLineNumber =
+    activeRow === null
+      ? null
+      : [...segmentIntoLines(strokes).keys()].sort((a, b) => a - b)
+          .indexOf(activeRow) + 1 || null;
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#faf8f2" }}>
       <canvas
@@ -357,12 +552,15 @@ export default function App() {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
         style={{ touchAction: "none", display: "block" }}
       />
       <input
         type="text"
         value={problem}
-        onChange={(e) => setProblem(e.target.value)}
+        onChange={handleProblemChange}
+        onBlur={handleProblemEditDone}
+        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
         placeholder="Enter the problem, e.g. 3x - 12 = 2x + 5"
         style={{
           position: "fixed", top: 12, left: 12, padding: "8px 12px",
@@ -383,12 +581,23 @@ export default function App() {
       )}
       <button
         onClick={() => {
+          ++transcriptionRequestId.current;
+          ++checkRequestId.current;
+          ++hintRequestId.current;
+          currentStroke.current = null;
+          activePointerId.current = null;
+          transcriptionRowRef.current = null;
+          activeRowRef.current = null;
+          linesRef.current = [];
           setStrokes([]);
           setLines([]);
+          setActiveRow(null);
           setVerdictsByLine(new Map());
           setFirstWrongLine(null);
           setHintLevel(0);
           setHintText(null);
+          setHintLoading(false);
+          setTranscribing(false);
           setLastResult(null);
         }}
         style={{
@@ -400,24 +609,34 @@ export default function App() {
       </button>
       <button
         onClick={handleFinishLine}
-        disabled={transcribing || strokes.length === 0}
+        disabled={
+          transcribing || strokes.length === 0 || activeLineNumber === null
+        }
         style={{
           position: "fixed", top: 12, right: 96, padding: "8px 16px",
           background: "#fff", border: "1px solid #ccc", borderRadius: 8,
-          opacity: transcribing || strokes.length === 0 ? 0.5 : 1,
+          opacity:
+            transcribing || strokes.length === 0 || activeLineNumber === null
+              ? 0.5
+              : 1,
         }}
       >
-        {transcribing ? "Transcribing..." : "Finish Line"}
+        {transcribing
+          ? "Transcribing..."
+          : activeLineNumber === null
+          ? "Finish Line"
+          : `Finish line ${activeLineNumber}`}
       </button>
-      {lastResult?.error && (
+      {(lastResult?.error || lastResult?.warning) && (
         <div
           style={{
             position: "fixed", bottom: 12, left: 12, padding: "10px 16px",
             background: "#fff", border: "1px solid #ccc", borderRadius: 8,
-            fontFamily: "monospace", maxWidth: "80vw", color: "#b00020",
+            fontFamily: "monospace", maxWidth: "80vw",
+            color: lastResult.warning ? "#a06a3a" : "#b00020",
           }}
         >
-          Error: {lastResult.error}
+          {lastResult.warning ? "Notice" : "Error"}: {lastResult.warning ?? lastResult.error}
         </div>
       )}
       {lines.length > 0 && (
@@ -432,19 +651,24 @@ export default function App() {
           <div style={{ fontWeight: "bold", marginBottom: 8, fontFamily: "sans-serif" }}>
             Your work (edit if misread)
           </div>
-          {lines.map((l) => {
+          {lines.map((l, index) => {
             const verdict = verdictsByLine.get(l.row);
+            const verdictStatus = getVerdictStatus(verdict);
             const status = l.unreadable
               ? { label: "couldn't read -- type it here", color: "#a06a3a" }
               : verdict === undefined
               ? { label: "not checked", color: "#888" }
-              : verdict.valid
+              : verdictStatus === "valid"
               ? { label: "correct", color: "#28a05a" }
-              : { label: verdict.error_type || "wrong", color: "#c83232" };
+              : verdictStatus === "invalid"
+              ? { label: verdict.error_type || "wrong", color: "#c83232" }
+              : verdictStatus === "parse_error"
+              ? { label: "couldn't parse", color: "#a06a3a" }
+              : { label: "unsupported", color: "#a06a3a" };
             return (
               <div key={l.row} style={{ marginBottom: 10 }}>
                 <div style={{ fontSize: 11, color: status.color, fontFamily: "sans-serif" }}>
-                  line {l.row}: {status.label}
+                  line {index + 1}: {status.label}
                 </div>
                 <input
                   type="text"
