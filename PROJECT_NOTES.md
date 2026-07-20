@@ -93,7 +93,7 @@ The verdict stage was built first, out of order, because it was the only stage w
 2. **Handwriting variety.** The transcription model must handle messy real student writing, not just ours. Mitigation: test with deliberately bad handwriting early, and keep MathPix as a fallback reader.
 3. **Chemistry recognition.** Reading hand-drawn molecules is an unsolved research problem beyond simple structures. Mitigation: the demo covers a narrow, rehearsed set of structure types, not open-ended organic chemistry.
 4. **Latency.** "Checks as you write" requires fast round trips. Mitigation: the app only checks when a line is finished (pen lift), never on every stroke.
-5. **Python 3.14 on the dev laptop.** Very new version; some libraries may not have Windows builds yet. Mitigation: if an install fails, add Python 3.12 alongside and point the project at it.
+5. **Cross-platform development environments.** The team develops on both macOS and Windows, so local interpreters and virtual environments are not portable between teammates. Mitigation: standardize on Python 3.11, keep dependencies in `backend/requirements.txt`, and use the platform-specific setup scripts documented in `README.md`.
 
 ## 10. Product rules (do not violate these)
 
@@ -678,4 +678,3 @@ Stroke in
 ```
 
 Everything else should come after that works.
-
