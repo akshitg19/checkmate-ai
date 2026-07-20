@@ -2,7 +2,7 @@ import base64
 from unittest.mock import patch
 
 import pytest
-from google.auth.exceptions import DefaultCredentialsError
+from google.auth.exceptions import RefreshError
 
 from transcription import (
     TranscriptionInputError,
@@ -33,8 +33,18 @@ def test_decode_png_accepts_png_signature() -> None:
 @patch("transcription._create_client")
 def test_transcribe_maps_missing_credentials_to_service_error(mock_create_client) -> None:
     mock_create_client.return_value.models.generate_content.side_effect = (
-        DefaultCredentialsError("missing")
+        RefreshError("reauthentication needed")
     )
+    value = base64.b64encode(b"\x89PNG\r\n\x1a\ncontent").decode("ascii")
+
+    with pytest.raises(TranscriptionServiceError):
+        transcribe_line(value)
+
+
+@patch("transcription._create_client", side_effect=ValueError("bad configuration"))
+def test_transcribe_maps_client_configuration_failure_to_service_error(
+    _mock_create_client,
+) -> None:
     value = base64.b64encode(b"\x89PNG\r\n\x1a\ncontent").decode("ascii")
 
     with pytest.raises(TranscriptionServiceError):

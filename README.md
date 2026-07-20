@@ -35,6 +35,10 @@ cd ..\frontend
 npm ci
 ```
 
+The backend setup scripts recreate `backend/venv` with Python 3.11 each time,
+so stale packages from an older Python installation cannot leak into the new
+environment.
+
 If PowerShell blocks local scripts, allow them for the current terminal only:
 
 ```powershell
@@ -90,6 +94,17 @@ Expected output: `working`. Automated tests never call Gemini.
 Configuration defaults are documented in `.env.example`. To override one,
 export `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, or `GEMINI_MODEL` in the
 terminal before starting the backend. No secret values belong in that file.
+
+The current deterministic judge intentionally supports a narrow MVP: rational
+arithmetic and one-variable linear equations. See
+[`backend/JUDGE_SCOPE.md`](backend/JUDGE_SCOPE.md) for accepted notation and
+the difference between an incorrect, unsupported, and unparseable step.
+
+The frontend uses Vite's `/api` development proxy by default, so a tablet that
+opens the displayed Network URL still reaches the backend running on the
+laptop. For separate deployments, set `VITE_API_BASE_URL` when building the
+frontend and add that frontend origin to the backend's comma-separated
+`CORS_ORIGINS` environment variable.
 
 ## Validate changes
 

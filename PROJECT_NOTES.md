@@ -1,7 +1,7 @@
 # CheckMate: Project Notes
 
 Working doc for the team. Plain language, kept current as decisions change.
-Last updated: July 16, 2026.
+Last updated: July 19, 2026.
 
 ---
 
@@ -14,8 +14,8 @@ The product exists because current homework apps only check the final answer. Ph
 ## 2. What makes it different (in one sentence each)
 
 - We see the student's work as they write it, not a photo of it afterward.
-- The correctness decision is made by math software that cannot be wrong, not by an AI that can be.
-- The AI is only used for two jobs where it is strong: reading handwriting, and writing a friendly hint sentence.
+- The correctness decision is made by deterministic math software inside a clearly documented support scope, not by a generative AI model.
+- The AI is currently used for one job where it is strong: reading handwriting. Hints are deterministic templates in the MVP.
 - Hints never contain the answer. This is a product rule, not a technical limitation.
 
 ## 3. Known competition and our honest position
@@ -36,25 +36,27 @@ The pipeline has five stages. Each stage only depends on the one before it.
 
 1. **Ink capture.** The browser records the stylus. A stroke is the set of points the pen touched between touching down and lifting up, with timing and pressure. This works the same on iPad and Samsung because it uses a web standard (Pointer Events), which is the reason we build a web app instead of two native apps.
 
-2. **Line segmentation.** Strokes are grouped into written lines: line 1, line 2, line 3. Rule used: a pen lift followed by a clear vertical gap starts a new line. The interface shows faint ruled lines to encourage writing in rows, which makes this rule reliable. This stage is the highest technical risk in the project.
+2. **Line segmentation.** Strokes are grouped into written lines: line 1, line 2, line 3. The current MVP assigns each stroke to the ruled row containing its vertical center. The interface shows faint ruled lines to make that behavior visible and predictable. This stage remains the highest technical risk in the project.
 
-3. **Transcription.** A finished line is converted to an image and sent to an AI vision model (Claude), which returns the math as text. This is the only place AI touches the student's work, and its only job is reading, not judging.
+3. **Transcription.** A finished line is converted to an image and sent to Gemini through Vertex AI, which returns the math as text. This is the only place AI currently touches the student's work, and its only job is reading, not judging.
 
-4. **Verdict.** The transcribed line is checked by deterministic math software. For algebra, SymPy confirms whether the new line really follows from the previous line. For chemistry, RDKit confirms whether a drawn structure has the correct bonds. These tools compute the answer; they do not guess. If the checker says a line is wrong, it is wrong.
+4. **Verdict.** The transcribed line is checked by deterministic math software. For algebra, SymPy confirms whether a supported new line follows from the previous line. Chemistry with RDKit is planned but not implemented. The API separates a confirmed mistake from an unsupported or unparseable line, so product limitations are not shown as student errors.
 
-5. **Hint.** Only after the checker flags a line, the AI writes one short sentence pointing the student toward the mistake. Three hint levels: where to look, what kind of mistake, and an explanation. The student asks for each level; nothing is volunteered beyond the underline.
+5. **Hint.** Only after the checker flags a supported line, the app offers a deterministic template pointing the student toward the mistake. There are three hint levels: where to look, what kind of mistake, and a conceptual explanation. The student asks for each level; nothing is volunteered beyond the underline. The templates never receive the problem or solution.
 
 ## 5. Current state (as of this doc)
 
 Done:
-- GitHub repo created (`checkmate-ai`), team added as collaborators.
-- Backend running locally: a FastAPI server with two endpoints.
-  - `GET /health` confirms the server is up.
-  - `POST /check` accepts a problem and a list of written steps, returns a per-line verdict and the first wrong line. Algebra and plain arithmetic are supported through SymPy.
-- The judge is written behind a common interface, so adding a chemistry judge later does not require changing the rest of the system.
+- Cross-platform setup and start scripts for macOS/Linux and Windows.
+- React drawing canvas with Pointer Events, ruled-row segmentation, per-line PNG export, editable transcription, verdict display, and hint controls.
+- FastAPI endpoints for health, transcription, checking, and hints.
+- Gemini/Vertex AI line transcription with unreadable and service-error handling.
+- A constrained SymPy judge for rational arithmetic and one-variable linear equations, with explicit `valid`, `invalid`, `unsupported`, and `parse_error` outcomes.
+- Deterministic three-level hint templates that receive no problem or answer content.
+- Automated backend tests plus frontend lint/build checks in CI.
 
 Not started:
-- The frontend (drawing canvas), line segmentation, transcription, hints, chemistry.
+- Chemistry recognition/judging, real-student testing, and production deployment.
 
 ## 6. Build order and why
 
@@ -72,10 +74,10 @@ The verdict stage was built first, out of order, because it was the only stage w
 |---|---|---|
 | App | Web app, React, canvas element | One codebase covers iPad and Samsung; no app store; demo by sharing a URL |
 | Ink | Pointer Events API | Web standard; gives full stylus data including pressure; pen lift marks line ends |
-| Transcription | Claude API (vision), MathPix as fallback | Strokes render to clean images, so accuracy is high without training our own model |
+| Transcription | Gemini on Vertex AI | Strokes render to clean images, so the team can test vision accuracy without training a model |
 | Verdict | SymPy (algebra), RDKit + MolScribe (chemistry), plain Python (arithmetic) | Deterministic; cannot hallucinate |
-| Hints | Claude API with a strict prompt: locate, nudge, never solve | Cheap; one call per flagged line |
-| Backend | FastAPI with websockets | Team already knows it; fast to build |
+| Hints | Deterministic templates keyed by error category | No model receives the problem or answer, so the MVP cannot leak a solution through hints |
+| Backend | FastAPI HTTP endpoints | Simple local integration and an interactive `/docs` test surface |
 | On-device (stretch) | Qualcomm edge hardware for transcription | Lower latency and privacy; only if weeks 1-6 go well |
 
 ## 8. Timeline (8 weeks total, demo-ready spine at week 4)
@@ -678,3 +680,154 @@ Stroke in
 ```
 
 Everything else should come after that works.
+---
+
+# 13. Status Update and Expanded Roadmap (July 19, 2026)
+
+This section reflects what has actually been built and lays out a more
+ambitious, more detailed plan than the original week-by-week sketch above.
+Nothing above this line has been edited; where this section disagrees with
+older sections, this section is current.
+
+## 13.1 Corrections to earlier sections
+
+- **Transcription model is Gemini 2.5 Flash via Vertex AI**, not Claude.
+  Auth is Application Default Credentials through the gcloud CLI — never
+  raw API keys. Cost per transcribed line is a fraction of a cent
+  (thinking disabled, output capped at 64 tokens, temperature 0).
+- **Hints are deterministic templates, not an AI call.** This is stronger
+  than the original plan: the hint generator only ever receives a line
+  number and an error category — it never sees the solution, the judge's
+  internal detail, or the student's actual math — so it *structurally
+  cannot* leak an answer. Zero cost, zero latency, zero hallucination
+  risk. An AI-phrased layer can be added later on top of the same
+  categories if we want friendlier wording.
+- **The project lives in a shared 30-student GCP project** (`cs-sail-2b08`).
+  Billing there includes many other workloads; CheckMate's own usage is
+  cents. Long-term: move to a dedicated project with a budget alert.
+
+## 13.2 What is DONE (verified working, July 19)
+
+The full spine works end to end, plus most of Week 2:
+
+- Canvas with stylus capture, palm rejection, coalesced pointer events.
+- Row-based line segmentation with on-canvas debug boxes.
+- Ruled lines drawn light-blue and thin, deliberately subordinate to ink
+  (dark ruling was being misread by the vision model as `=`/`-` marks).
+- Clean per-line PNG export (crop + paper background, debug overlay
+  excluded) wired to `/transcribe` via a Finish Line button.
+- `/transcribe`: Gemini 2.5 Flash, deterministic config, prompt hardened
+  against ruled-line confusion and LaTeX/Greek output; output normalized
+  (unicode minus/×/÷/superscripts → ASCII); explicit `unreadable` flag;
+  invalid PNGs return 422 and service failures return a safe 503 without
+  exposing credentials or provider internals.
+- `/check`: SymPy equivalence checking with **deterministic error
+  classification**. Proven mistakes can be categorized as `sign`,
+  `division`, `distribution`, `arithmetic`, or generic `algebraic`.
+  Unsupported and unparseable input are separate statuses and never count
+  as a student mistake. Ambiguous causes stay generic rather than being
+  guessed.
+- `/hint`: three-level ladder (where to look → mistake type → concept),
+  per-category templates matching every judge category, fallbacks for
+  unknown categories, answer-leak tests in CI.
+- Frontend verdict display: green for valid, red for confirmed mistakes,
+  amber for unsupported/unparseable input, plus a red underline on flagged
+  lines. A side panel lists every transcribed line with an
+  **editable text field** — a misread line is a one-second typed fix that
+  re-runs the (free) checker, which is also the demo safety net.
+- 89 backend tests passing (judge scope, API contracts, transcription error
+  handling, classification, and hint safety).
+- Transcription failure log with real handwriting samples and identified
+  patterns (`backend/tests/transcription/failures.md`).
+
+## 13.3 Known caveats (honest list, check before demo)
+
+- Error classification is ordered: sign is tested before distribution and
+  exact one-side scaling. A mistake that fits no provable pattern stays
+  `algebraic`; the checker does not invent a more specific cause.
+- The distribution check requires the parenthesized form to still be the
+  current reference line; once a student validly expands, later steps
+  can't be classified as distribution errors (correct behavior, worth
+  knowing).
+- The `division` classifier only runs on single-variable linear steps.
+- Segmentation is row-based: writing that drifts across ruled rows
+  mis-groups. The pen-lift + vertical-gap rule from section 4 is NOT yet
+  implemented — rows only.
+- Multi-line rework: re-finishing a row replaces that row's transcription
+  silently. There is no undo.
+- Degenerate equations such as `12 = 12` are kept as equation objects instead
+  of being auto-collapsed to booleans. Exponents, nonlinear work,
+  multivariable equations, functions, and variable denominators are reported
+  as `unsupported`; these boundaries have regression tests.
+- The problem is still *typed* into a box, not handwritten (deliberate
+  decision, July 18 — revisit only after student testing).
+
+## 13.4 Expanded roadmap — algebra depth first, then breadth
+
+### Milestone A — "Every mistake gets a precise hint" (Person 2 + 3)
+
+- Judge: classify more mistake types deterministically:
+  - combining unlike terms (`3x + 2 = 5x`)
+  - dropped term (a term present in ref vanishes with no operation)
+  - swapped sides without negation
+  - multiplying only one side
+- Judge: support fractions and decimals robustly (`x/2 + 3 = 7`,
+  `0.5x = 4`), including classifying "cleared the fraction wrong."
+- Judge: two-variable linear systems (substitution steps) — stretch.
+- Hints: per-category level-1 variants that reference the *operation*
+  between the two lines ("you subtracted something from both sides —
+  check what you subtracted") — still template-only, still no values.
+- Hint quality tests: for every classified category, an automated test
+  asserting the hint never contains any token from the student's work.
+
+### Milestone B — "The canvas feels like paper" (Person 1)
+
+- Implement true pen-lift + vertical-gap segmentation (section 4's rule),
+  replacing pure row-bucketing; keep rows as a fallback.
+- Auto-finish: a line is sent automatically after N seconds of pen
+  inactivity below it (no button press) — the button stays as backup.
+- Active-line highlight while writing; subtle checkmark animation on a
+  green verdict.
+- Undo last stroke; erase mode; stroke smoothing (quadratic curves
+  through coalesced points).
+- Tablet testing over LAN (laptop IP + port on iPad/Samsung browser);
+  document touch-action/pressure quirks per device.
+
+### Milestone C — "Trustworthy transcription" (Person 3)
+
+- Confidence surfacing: prompt Gemini for a per-line confidence token;
+  below threshold, the UI pre-focuses the correction field.
+- Failure-driven prompt iteration: every new failure goes into
+  `failures.md` with expected/actual; prompt changes must cite which
+  failure they fix and must not regress the sample set.
+- Batch re-run harness against the sample folder with a diff report
+  (already exists: `tests/transcription/run_samples.py`).
+- Latency measurement: log server-side transcription time per call;
+  target < 2s p95 on shared WiFi.
+- Fallback path: if `/transcribe` errors twice in a row, the UI offers
+  typed input for the line automatically (backup for live demo).
+
+### Milestone D — "More than one problem" (team)
+
+- Problem presets: a dropdown of rehearsed demo problems (each with known
+  solution path and known judge coverage) instead of free typing.
+- Multi-problem sessions: Clear becomes "next problem," with a session
+  summary (lines written, mistakes made, hints used).
+- Per-student session log (JSON download) — the seed of the
+  teacher/parent visibility feature in section 3.
+
+### Milestone E — Chemistry (unchanged from section 4/8 plan, after A–C)
+
+- RDKit judge behind the same `Judge` interface; MolScribe or Gemini
+  vision for structure recognition; narrow rehearsed molecule set only.
+
+## 13.5 Working agreements added this week
+
+- No live Gemini calls for plumbing/wiring tests — stub or use recorded
+  samples; real calls only for genuine transcription-quality testing.
+- All work goes through feature branches and PRs (current branch:
+  `ai-transcription`); cross-ownership edits are allowed when they
+  unblock the spine but must be called out in the PR description so the
+  owner reviews them.
+- `backend/schemas.py` changes are additive-only where possible and are
+  announced in the PR that needs them.

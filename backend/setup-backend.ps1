@@ -3,13 +3,13 @@ Set-Location $PSScriptRoot
 
 $python = Get-Command py -ErrorAction SilentlyContinue
 if ($python) {
-    & py -3.11 -m venv venv
+    & py -3.11 -m venv --clear venv
 } else {
     $python = Get-Command python -ErrorAction SilentlyContinue
     if (-not $python) {
         throw "Python 3.11 is required and was not found."
     }
-    & python -m venv venv
+    & python -m venv --clear venv
 }
 
 $version = & .\venv\Scripts\python.exe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
