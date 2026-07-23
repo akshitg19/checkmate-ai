@@ -3,6 +3,52 @@ import { useRef, useState, useEffect, useCallback } from "react";
 const LINE_HEIGHT = 64;
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const LINE_PAD = 16;
+const ERASER_RADIUS = 18;
+
+function distanceToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  if (dx === 0 && dy === 0) {
+    return Math.hypot(point.x - start.x, point.y - start.y);
+  }
+
+  const t = Math.max(
+    0,
+    Math.min(
+      1,
+      ((point.x - start.x) * dx + (point.y - start.y) * dy) /
+        (dx * dx + dy * dy)
+    )
+  );
+
+  const closestX = start.x + t * dx;
+  const closestY = start.y + t * dy;
+
+  return Math.hypot(point.x - closestX, point.y - closestY);
+}
+
+function strokeTouchesPoint(stroke, point) {
+  const points = stroke.points;
+
+  if (points.length === 1) {
+    return (
+      Math.hypot(point.x - points[0].x, point.y - points[0].y) <=
+      ERASER_RADIUS
+    );
+  }
+
+  for (let index = 1; index < points.length; index += 1) {
+    if (
+      distanceToSegment(point, points[index - 1], points[index]) <=
+      ERASER_RADIUS
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function getVerdictStatus(verdict) {
   if (!verdict) return null;
@@ -102,6 +148,7 @@ function renderLineToPng(lineStrokes) {
 export default function App() {
   const canvasRef = useRef(null);
   const [strokes, setStrokes] = useState([]); // finished strokes
+  const [activeTool, setActiveTool] = useState("pen");
   const currentStroke = useRef(null); // stroke in progress
   const activePointerId = useRef(null);
   const transcriptionRequestId = useRef(0);
@@ -141,6 +188,23 @@ export default function App() {
     if (e.pointerType === "touch") return; // palm rejection
     if (activePointerId.current !== null) return;
     const firstPoint = getPoint(e);
+    if (activeTool === "eraser") {
+      const strokeIndex = strokes.findLastIndex((stroke) =>
+        strokeTouchesPoint(stroke, firstPoint)
+      );
+
+      if (strokeIndex === -1) return;
+
+      const removedStroke = strokes[strokeIndex];
+      const updatedStrokes = strokes.filter(
+        (_, index) => index !== strokeIndex
+      );
+
+      setStrokes(updatedStrokes);
+      invalidateEditedRow(getStrokeRow(removedStroke));
+      return;
+    }
+
     activePointerId.current = e.pointerId;
 
     // The visible handwriting no longer matches the last transcription.
@@ -192,6 +256,44 @@ export default function App() {
     currentStroke.current = null;
     activePointerId.current = null;
     drawFrame();
+  };
+
+  // Any edit to handwriting makes that row's old transcription and
+  // all checker feedback stale.
+  const invalidateEditedRow = (row) => {
+    ++transcriptionRequestId.current;
+    ++checkRequestId.current;
+    ++hintRequestId.current;
+
+    transcriptionRowRef.current = null;
+    setTranscribing(false);
+
+    // Remove the old transcription for the edited row.
+    const updatedLines = linesRef.current.filter((line) => line.row !== row);
+    linesRef.current = updatedLines;
+    setLines(updatedLines);
+
+    // Make the edited row active so it can be finished/transcribed again.
+    activeRowRef.current = row;
+    setActiveRow(row);
+
+    // Old verdicts and hints are no longer trustworthy.
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setHintLevel(0);
+    setHintText(null);
+    setHintLoading(false);
+    setLastResult(null);
+  };
+
+  const handleUndo = () => {
+    if (strokes.length === 0 || transcribing) return;
+
+    const removedStroke = strokes[strokes.length - 1];
+    const affectedRow = getStrokeRow(removedStroke);
+
+    setStrokes((previousStrokes) => previousStrokes.slice(0, -1));
+    invalidateEditedRow(affectedRow);
   };
 
   // Lines that can be sent to the judge: have text and were readable
@@ -539,6 +641,29 @@ export default function App() {
     drawFrame();
   }, [strokes, drawFrame]);
 
+  const handleClear = () => {
+    ++transcriptionRequestId.current;
+    ++checkRequestId.current;
+    ++hintRequestId.current;
+
+    currentStroke.current = null;
+    activePointerId.current = null;
+    transcriptionRowRef.current = null;
+    activeRowRef.current = null;
+    linesRef.current = [];
+
+    setStrokes([]);
+    setLines([]);
+    setActiveRow(null);
+    setVerdictsByLine(new Map());
+    setFirstWrongLine(null);
+    setHintLevel(0);
+    setHintText(null);
+    setHintLoading(false);
+    setTranscribing(false);
+    setLastResult(null);
+  };
+
   const activeLineNumber =
     activeRow === null
       ? null
@@ -555,78 +680,153 @@ export default function App() {
         onPointerCancel={handlePointerCancel}
         style={{ touchAction: "none", display: "block" }}
       />
-      <input
-        type="text"
-        value={problem}
-        onChange={handleProblemChange}
-        onBlur={handleProblemEditDone}
-        onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-        placeholder="Enter the problem, e.g. 3x - 12 = 2x + 5"
+      <div
         style={{
-          position: "fixed", top: 12, left: 12, padding: "8px 12px",
-          width: 320, border: "1px solid #ccc", borderRadius: 8,
-          fontFamily: "monospace",
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 20,
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: 12,
+          boxSizing: "border-box",
+          background: "#faf8f2",
+          borderBottom: "1px solid #d6d6d6",
         }}
-      />
+      >
+        <input
+          type="text"
+          value={problem}
+          onChange={handleProblemChange}
+          onBlur={handleProblemEditDone}
+          onKeyDown={(e) =>
+            e.key === "Enter" && e.currentTarget.blur()
+          }
+          placeholder="Enter the problem, e.g. 3x - 12 = 2x + 5"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "8px 12px",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            fontFamily: "monospace",
+          }}
+        />
+
+        <button
+          onClick={() => setActiveTool("pen")}
+          style={{
+            padding: "8px 16px",
+            whiteSpace: "nowrap",
+            background: activeTool === "pen" ? "#dcecff" : "#fff",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            cursor: "pointer",
+          }}
+        >
+          Pen
+        </button>
+
+        <button
+          onClick={() => setActiveTool("eraser")}
+          style={{
+            padding: "8px 16px",
+            whiteSpace: "nowrap",
+            background: activeTool === "eraser" ? "#dcecff" : "#fff",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            cursor: "pointer",
+          }}
+        >
+          Eraser
+        </button>
+        <button
+          onClick={handleFinishLine}
+          disabled={
+            transcribing ||
+            strokes.length === 0 ||
+            activeLineNumber === null
+          }
+          style={{
+            padding: "8px 16px",
+            whiteSpace: "nowrap",
+            background: "#fff",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            opacity:
+              transcribing ||
+              strokes.length === 0 ||
+              activeLineNumber === null
+                ? 0.5
+                : 1,
+            cursor:
+              transcribing ||
+              strokes.length === 0 ||
+              activeLineNumber === null
+                ? "not-allowed"
+                : "pointer",
+          }}
+        >
+          {transcribing
+            ? "Transcribing..."
+            : activeLineNumber === null
+              ? "Finish Line"
+              : `Finish line ${activeLineNumber}`}
+        </button>
+
+        <button
+          onClick={handleUndo}
+          disabled={strokes.length === 0 || transcribing}
+          style={{
+            padding: "8px 16px",
+            whiteSpace: "nowrap",
+            background: "#fff",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            opacity:
+              strokes.length === 0 || transcribing ? 0.5 : 1,
+            cursor:
+              strokes.length === 0 || transcribing
+                ? "not-allowed"
+                : "pointer",
+          }}
+        >
+          Undo
+        </button>
+
+        <button
+          onClick={handleClear}
+          style={{
+            padding: "8px 16px",
+            whiteSpace: "nowrap",
+            background: "#fff",
+            border: "1px solid #ccc",
+            borderRadius: 8,
+            cursor: "pointer",
+          }}
+        >
+          Clear
+        </button>
+      </div>
+
       {!problem.trim() && (
         <div
           style={{
-            position: "fixed", top: 50, left: 12, fontSize: 12,
-            color: "#a06a3a", fontFamily: "monospace",
+            position: "fixed",
+            top: 60,
+            left: 12,
+            zIndex: 20,
+            fontSize: 12,
+            color: "#a06a3a",
+            fontFamily: "monospace",
           }}
         >
-          Checking is off until you type a problem above -- lines will
+          Checking is off until you type a problem above — lines will
           transcribe but won't be graded.
         </div>
       )}
-      <button
-        onClick={() => {
-          ++transcriptionRequestId.current;
-          ++checkRequestId.current;
-          ++hintRequestId.current;
-          currentStroke.current = null;
-          activePointerId.current = null;
-          transcriptionRowRef.current = null;
-          activeRowRef.current = null;
-          linesRef.current = [];
-          setStrokes([]);
-          setLines([]);
-          setActiveRow(null);
-          setVerdictsByLine(new Map());
-          setFirstWrongLine(null);
-          setHintLevel(0);
-          setHintText(null);
-          setHintLoading(false);
-          setTranscribing(false);
-          setLastResult(null);
-        }}
-        style={{
-          position: "fixed", top: 12, right: 12, padding: "8px 16px",
-          background: "#fff", border: "1px solid #ccc", borderRadius: 8,
-        }}
-      >
-        Clear
-      </button>
-      <button
-        onClick={handleFinishLine}
-        disabled={
-          transcribing || strokes.length === 0 || activeLineNumber === null
-        }
-        style={{
-          position: "fixed", top: 12, right: 96, padding: "8px 16px",
-          background: "#fff", border: "1px solid #ccc", borderRadius: 8,
-          opacity:
-            transcribing || strokes.length === 0 || activeLineNumber === null
-              ? 0.5
-              : 1,
-        }}
-      >
-        {transcribing
-          ? "Transcribing..."
-          : activeLineNumber === null
-          ? "Finish Line"
-          : `Finish line ${activeLineNumber}`}
-      </button>
       {(lastResult?.error || lastResult?.warning) && (
         <div
           style={{
