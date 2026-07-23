@@ -1,6 +1,9 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 
 const LINE_HEIGHT = 64;
+const NOTEBOOK_ROWS = 24;
+const NOTEBOOK_HEIGHT = NOTEBOOK_ROWS * LINE_HEIGHT;
+const TOOLBAR_HEIGHT = 64;
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const LINE_PAD = 16;
 const ERASER_RADIUS = 18;
@@ -624,22 +627,25 @@ export default function App() {
     }
   }, [strokes, drawStroke, verdictsByLine]);
 
-  // Size canvas to window
+  // Keep the notebook at least 24 rows tall so the page can scroll.
   useEffect(() => {
     const canvas = canvasRef.current;
+
     const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      canvas.width = document.documentElement.clientWidth;
+      canvas.height = Math.max(
+        NOTEBOOK_HEIGHT,
+        window.innerHeight - TOOLBAR_HEIGHT
+      );
+
       drawFrame();
     };
+
     resize();
     window.addEventListener("resize", resize);
+
     return () => window.removeEventListener("resize", resize);
   }, [drawFrame]);
-
-  useEffect(() => {
-    drawFrame();
-  }, [strokes, drawFrame]);
 
   const handleClear = () => {
     ++transcriptionRequestId.current;
@@ -671,14 +677,27 @@ export default function App() {
           .indexOf(activeRow) + 1 || null;
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#faf8f2" }}>
+    <div 
+      style={{ 
+        position: "fixed", 
+        inset: 0,
+        overflowY: "auto",
+        overflowX: "hidden", 
+        background: "#faf8f2" 
+      }}
+    >
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        style={{ touchAction: "none", display: "block" }}
+        style={{ 
+          touchAction: "none", 
+          display: "block",
+          marginTop: TOOLBAR_HEIGHT,
+          background: "#faf8f2",
+        }}
       />
       <div
         style={{
