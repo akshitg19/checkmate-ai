@@ -329,22 +329,52 @@ export default function App() {
     setFirstWrongLine(null);
     setLastResult(null);
 
-    const judgeLines = toJudgeLines(lineArr);
+    const usableLines = [...lineArr]
+      .sort((a, b) => a.row - b.row)
+      .filter(
+        (line) =>
+          line.text.trim() &&
+          line.text !== "UNREADABLE"
+      );
+
+    const typedProblem = problemText.trim();
+
+    // When the textbox is blank, use the first handwritten row as the problem.
+    // When the textbox has text, preserve the existing behavior and treat every
+    // handwritten row as a solution step.
+    const handwrittenProblem = typedProblem ? null : usableLines[0] ?? null;
+
+    const effectiveProblem =
+      typedProblem || handwrittenProblem?.text.trim() || "";
+
+    const solutionLines = typedProblem
+      ? usableLines
+      : usableLines.slice(1);
+
+    const judgeLines = solutionLines.map((line, index) => ({
+      row: line.row,
+      line_number: index + 1,
+      latex: line.text,
+    }));
+
     const stepList = judgeLines.map(({ line_number, latex }) => ({
       line_number,
       latex,
     }));
+
     const rowByLineNumber = new Map(
       judgeLines.map((line) => [line.line_number, line.row])
     );
-    if (!problemText.trim() || stepList.length === 0) {
+
+    if (!effectiveProblem || stepList.length === 0) {
       return;
     }
+
     try {
       const res = await fetch(`${API_BASE}/check`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ problem: problemText, steps: stepList }),
+        body: JSON.stringify({ problem: effectiveProblem, steps: stepList }),
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
@@ -676,6 +706,17 @@ export default function App() {
       : [...segmentIntoLines(strokes).keys()].sort((a, b) => a - b)
           .indexOf(activeRow) + 1 || null;
 
+  const handwrittenProblemRow =
+    !problem.trim()
+      ? [...lines]
+          .sort((a, b) => a.row - b.row)
+          .find(
+            (line) =>
+              line.text.trim() &&
+              line.text !== "UNREADABLE"
+          )?.row ?? null
+      : null;
+
   return (
     <div 
       style={{ 
@@ -723,7 +764,7 @@ export default function App() {
           onKeyDown={(e) =>
             e.key === "Enter" && e.currentTarget.blur()
           }
-          placeholder="Enter the problem, e.g. 3x - 12 = 2x + 5"
+          placeholder="Optional problem override — otherwise write the problem on line 1"
           style={{
             flex: 1,
             minWidth: 0,
@@ -842,8 +883,7 @@ export default function App() {
             fontFamily: "monospace",
           }}
         >
-          Checking is off until you type a problem above — lines will
-          transcribe but won't be graded.
+          Leave the box blank to use your first handwritten line as the problem.
         </div>
       )}
       {(lastResult?.error || lastResult?.warning) && (
@@ -873,9 +913,12 @@ export default function App() {
           {lines.map((l, index) => {
             const verdict = verdictsByLine.get(l.row);
             const verdictStatus = getVerdictStatus(verdict);
-            const status = l.unreadable
-              ? { label: "couldn't read -- type it here", color: "#a06a3a" }
-              : verdict === undefined
+            const status =
+              l.unreadable
+                ? { label: "couldn't read -- type it here", color: "#a06a3a" }
+                : l.row === handwrittenProblemRow
+                ? { label: "problem", color: "#4b6b9a" }
+                : verdict === undefined
               ? { label: "not checked", color: "#888" }
               : verdictStatus === "valid"
               ? { label: "correct", color: "#28a05a" }
